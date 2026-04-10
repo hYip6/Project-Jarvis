@@ -19,16 +19,38 @@ export async function POST(request: Request, context: RouteContext) {
     const now = nowIso();
     const db = await getDb();
     const orders = db.collection("orders");
+    const orderObjectId = toObjectId(id);
+    const fulfillerObjectId = toObjectId(fulfillerId);
+
+    const existing = await orders.findOne({ _id: orderObjectId });
+    if (!existing) {
+      return NextResponse.json({ error: "Order not found." }, { status: 404 });
+    }
+    if (existing.requesterId.equals(fulfillerObjectId)) {
+      return NextResponse.json(
+        {
+          error:
+            "You cannot claim your own request. Post as requester and have another student with dining dollars claim it—or use a second account for testing.",
+        },
+        { status: 400 }
+      );
+    }
+    if (existing.status !== "PENDING") {
+      return NextResponse.json(
+        { error: "This order is no longer open—it may already be claimed. Try refreshing." },
+        { status: 409 }
+      );
+    }
 
     const updatedOrder = await orders.findOneAndUpdate(
       {
-        _id: toObjectId(id),
+        _id: orderObjectId,
         status: "PENDING",
-        requesterId: { $ne: toObjectId(fulfillerId) },
+        requesterId: { $ne: fulfillerObjectId },
       },
       {
         $set: {
-          fulfillerId: toObjectId(fulfillerId),
+          fulfillerId: fulfillerObjectId,
           status: "CLAIMED",
           claimedAt: now,
           updatedAt: now,
@@ -39,7 +61,7 @@ export async function POST(request: Request, context: RouteContext) {
 
     if (!updatedOrder) {
       return NextResponse.json(
-        { error: "Order is no longer available to claim." },
+        { error: "Someone else claimed this order just now. Refresh the marketplace." },
         { status: 409 }
       );
     }

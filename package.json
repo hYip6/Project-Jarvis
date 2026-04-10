@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "seed:open-orders": "node --env-file=.env.local scripts/seed-open-orders.mjs",
+    "remove:demo-orders": "node --env-file=.env.local scripts/remove-demo-orders.mjs",
+    "clear:in-progress-orders": "node --env-file=.env.local scripts/clear-in-progress-orders.mjs"
   },
   "dependencies": {
     "mongodb": "^7.1.1",

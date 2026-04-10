@@ -10,14 +10,11 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     const { id } = await context.params;
     const body = await request.json();
-    const fulfillerId = String(body.fulfillerId ?? "");
+    const fulfillerId = String(body.fulfillerId ?? "").trim();
     const proofValue = String(body.proofValue ?? "").trim();
 
-    if (!fulfillerId || !proofValue) {
-      return NextResponse.json(
-        { error: "fulfillerId and proofValue are required." },
-        { status: 400 }
-      );
+    if (!fulfillerId) {
+      return NextResponse.json({ error: "fulfillerId is required." }, { status: 400 });
     }
 
     const now = nowIso();

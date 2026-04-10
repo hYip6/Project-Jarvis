@@ -23,7 +23,7 @@ export async function POST(request: Request, context: RouteContext) {
     const updatedOrder = await orders.findOneAndUpdate(
       {
         _id: toObjectId(id),
-        status: "PICKED_UP",
+        status: { $in: ["PLACED", "PICKED_UP"] },
         requesterId: toObjectId(requesterId),
       },
       {
