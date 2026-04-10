@@ -1,26 +1,66 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f7f6f3;
+  --foreground: #111827;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-barlow), ui-sans-serif, system-ui, sans-serif;
+  --color-sbu: #cc0000;
+  --color-sbu-dark: #a30000;
+  --color-sbu-light: #ff2222;
+  --color-sbu-50: #fff0f0;
+  --color-sbu-100: #ffd6d6;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-card-hover: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-nav: 0 -1px 0 rgba(0, 0, 0, 0.06);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: #f7f6f3;
+  color: #111827;
+  min-height: 100dvh;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-stone-100 bg-white shadow-card;
+  }
+
+  .btn-primary {
+    @apply w-full rounded-xl bg-sbu px-4 py-3.5 text-sm font-semibold text-white transition-all hover:bg-sbu-dark active:scale-[0.98] active:bg-sbu-dark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sbu focus-visible:ring-offset-2;
+  }
+
+  .btn-secondary {
+    @apply w-full rounded-xl bg-stone-100 px-4 py-3.5 text-sm font-semibold text-gray-800 transition-all hover:bg-stone-200 active:scale-[0.98] active:bg-stone-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2;
+  }
+
+  .btn-ghost {
+    @apply text-sm font-semibold text-sbu transition-opacity active:opacity-60 focus-visible:outline-none focus-visible:underline;
+  }
+
+  .input-field {
+    @apply w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm text-gray-900 placeholder-gray-400 transition-colors focus-visible:border-sbu focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sbu/20;
+  }
+
+  .label {
+    @apply mb-1.5 block text-xs font-semibold uppercase tracking-wide text-gray-500;
+  }
+
+  .section-title {
+    @apply text-xs font-semibold uppercase tracking-wider text-gray-400;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
