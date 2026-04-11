@@ -9,7 +9,7 @@ const sans = Figtree({
 });
 
 const display = Barlow_Condensed({
-  weight: ["400", "600", "700"],
+  weight: ["400", "600", "700", "800", "900"],
   subsets: ["latin"],
   variable: "--font-barlow",
 });
