@@ -950,7 +950,7 @@ function Navbar({
 }) {
   const navItems = [
     { id: "home" as const, label: "Home" },
-    { id: "marketplace" as const, label: "Browse" },
+    { id: "marketplace" as const, label: "Orders" },
     { id: "request" as const, label: "Post", primary: true },
     { id: "profile" as const, label: "Profile" },
   ];
@@ -1788,7 +1788,7 @@ function OrderStatusView({
         <div className="card p-6">
           <p className="mb-1 font-display text-2xl font-bold text-gray-900">Order not found</p>
           <button className="btn-primary" onClick={() => navigate("marketplace")}>
-            Browse marketplace
+            Orders
           </button>
         </div>
       </div>

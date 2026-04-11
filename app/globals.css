@@ -1,5 +1,28 @@
 @import "tailwindcss";
 
+@keyframes help-fab-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes help-icon-tilt {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-11deg);
+  }
+  75% {
+    transform: rotate(11deg);
+  }
+}
+
 :root {
   --background: #f7f6f3;
   --foreground: #111827;
@@ -8,6 +31,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --animate-help-fab: help-fab-breathe 2.4s ease-in-out infinite;
+  --animate-help-icon: help-icon-tilt 3.2s ease-in-out infinite;
   --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
   --font-display: var(--font-barlow), ui-sans-serif, system-ui, sans-serif;
   --color-sbu: #cc0000;
