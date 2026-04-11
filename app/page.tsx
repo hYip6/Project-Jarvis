@@ -1,12 +1,39 @@
 "use client";
 
-import { UtensilsCrossed } from "lucide-react";
-import { Dispatch, FormEvent, SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
-import { LoginSceneBackdrop } from "./components/LoginSceneBackdrop";
+import {
+  Dispatch,
+  SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { OrderStatus } from "@/lib/types";
+import {
+  USER_STORAGE_KEY,
+  readStoredPersona,
+  BOB_USER,
+  ALICE_USER,
+  DEMO_USER_LOOKUP,
+  DEMO_BOB_ID,
+  DEMO_BOB_EMAIL,
+  type AppUser,
+} from "@/lib/demo-personas";
+import {
+  LOCAL_ORDERS_STORAGE_KEY,
+  loadLocalOrders,
+  saveLocalOrders,
+  visibleOrdersForUser,
+  createLocalOrder,
+  claimLocalOrder,
+  markPlacedLocalOrder,
+  markPickedUpLocalOrder,
+  completeLocalOrder,
+  type LocalOrder,
+} from "@/lib/local-orders";
 
-const USER_STORAGE_KEY = "hackathon-user-v2";
 const WITHDRAWN_STORAGE_KEY = "hackathon-wallet-withdrawn-v1";
-const POLL_MS = 20000;
 
 function readWithdrawnTotal(userId: string): number {
   if (typeof window === "undefined") {
@@ -46,6 +73,8 @@ const LOCATIONS = [
   "Jasmine",
   "West Side Dining",
 ] as const;
+
+const MENU_LOCATION_IDS = new Set<string>(["Savor", "Smash N' Shake", "Popeyes", "Subway"]);
 
 type MenuItem = { id: string; name: string; price: number; category: string };
 
@@ -126,29 +155,6 @@ const SUBWAY_MENU: MenuItem[] = [
 ];
 
 type PageId = "home" | "marketplace" | "request" | "status" | "profile";
-type OrderStatus = "PENDING" | "CLAIMED" | "PLACED" | "PICKED_UP" | "COMPLETED";
-
-type AppUser = {
-  _id: string;
-  name: string;
-  sbuEmail: string;
-  venmoHandle: string;
-  year: string;
-};
-
-type ApiOrder = {
-  _id: string;
-  requesterId: string;
-  fulfillerId: string | null;
-  location: string;
-  orderDetails: string;
-  originalPrice: number;
-  discountedPrice: number;
-  status: OrderStatus;
-  pickupWindow: string;
-  proofValue: string;
-  createdAt: string;
-};
 
 type UiOrder = {
   id: string;
@@ -166,8 +172,6 @@ type UiOrder = {
   pickupTime: string;
   orderConfirmation: string | null;
 };
-
-type UserIndex = Record<string, { _id: string; name: string; venmoHandle: string }>;
 
 const STATUS_CONFIG: Record<
   OrderStatus,
@@ -260,7 +264,7 @@ function timeAgo(iso: string) {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-function toUiOrder(order: ApiOrder, users: UserIndex): UiOrder {
+function toUiOrder(order: LocalOrder, users: typeof DEMO_USER_LOOKUP): UiOrder {
   const requester = users[order.requesterId];
   const fulfiller = order.fulfillerId ? users[order.fulfillerId] : null;
   return {
@@ -282,140 +286,56 @@ function toUiOrder(order: ApiOrder, users: UserIndex): UiOrder {
 }
 
 export default function Home() {
-  const [user, setUser] = useState<AppUser | null>(() => {
-    if (typeof window === "undefined") {
-      return null;
-    }
-    const saved = localStorage.getItem(USER_STORAGE_KEY);
-    if (!saved) {
-      return null;
-    }
-    try {
-      const raw = JSON.parse(saved) as Record<string, unknown>;
-      if (
-        typeof raw._id !== "string" ||
-        typeof raw.name !== "string" ||
-        typeof raw.sbuEmail !== "string" ||
-        typeof raw.venmoHandle !== "string"
-      ) {
-        return null;
-      }
-      return {
-        _id: raw._id,
-        name: raw.name,
-        sbuEmail: raw.sbuEmail,
-        venmoHandle: raw.venmoHandle,
-        year: typeof raw.year === "string" ? raw.year : "Student",
-      };
-    } catch {
-      return null;
-    }
-  });
+  const [user, setUser] = useState<AppUser>(BOB_USER);
   const [page, setPage] = useState<PageId>("home");
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
-  const [orders, setOrders] = useState<UiOrder[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [localOrders, setLocalOrders] = useState<LocalOrder[]>([]);
   const [error, setError] = useState("");
   const [proofByOrderId, setProofByOrderId] = useState<Record<string, string>>({});
   const [withdrawnTotal, setWithdrawnTotal] = useState(0);
   const [withdrawModalOpen, setWithdrawModalOpen] = useState(false);
   const [withdrawModalSession, setWithdrawModalSession] = useState(0);
 
-  const [loginForm, setLoginForm] = useState({
-    name: "",
-    sbuEmail: "",
-    venmoHandle: "",
-    year: "",
-  });
-
-  const loadUsers = useCallback(async (ids: string[]) => {
-    const filtered = [...new Set(ids.filter(Boolean))];
-    if (filtered.length === 0) {
-      return {} as UserIndex;
-    }
-    const response = await fetch(`/api/users?ids=${filtered.join(",")}`);
-    const payload = await response.json();
-    if (!response.ok) {
-      return {} as UserIndex;
-    }
-    const index: UserIndex = {};
-    for (const row of payload.users ?? []) {
-      index[row._id] = {
-        _id: row._id,
-        name: row.name,
-        venmoHandle: row.venmoHandle ?? "",
-      };
-    }
-    return index;
+  useEffect(() => {
+    setUser(readStoredPersona());
   }, []);
 
-  const refreshOrders = useCallback(
-    async (activeUser: AppUser) => {
-      const [openRes, myRes] = await Promise.all([
-        fetch("/api/orders?onlyOpen=true"),
-        fetch(`/api/orders/my?userId=${activeUser._id}`),
-      ]);
-      const openData = await openRes.json();
-      const myData = await myRes.json();
-      if (!openRes.ok || !myRes.ok) {
-        throw new Error(openData.error ?? myData.error ?? "Failed to load orders");
-      }
+  useEffect(() => {
+    setLocalOrders(loadLocalOrders());
+  }, []);
 
-      const allApiOrders = [
-        ...(openData.orders ?? []),
-        ...(myData.requested ?? []),
-        ...(myData.claimed ?? []),
-      ] as ApiOrder[];
-
-      const byId = new Map<string, ApiOrder>();
-      for (const order of allApiOrders) {
-        byId.set(order._id, order);
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== LOCAL_ORDERS_STORAGE_KEY || e.newValue == null) {
+        return;
       }
-      const merged = [...byId.values()];
-      const ids = merged.flatMap((order) => [order.requesterId, order.fulfillerId ?? ""]);
-      const freshUsers = await loadUsers(ids);
-      const lookup = freshUsers;
-      setOrders(merged.map((order) => toUiOrder(order, lookup)));
-    },
-    [loadUsers]
+      try {
+        const next = JSON.parse(e.newValue) as unknown;
+        if (Array.isArray(next)) {
+          setLocalOrders(next as LocalOrder[]);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  const orders = useMemo(
+    () =>
+      visibleOrdersForUser(localOrders, user._id).map((order) =>
+        toUiOrder(order, DEMO_USER_LOOKUP)
+      ),
+    [localOrders, user._id]
   );
 
+  const localOrdersRef = useRef<LocalOrder[]>(localOrders);
+  localOrdersRef.current = localOrders;
+
   useEffect(() => {
-    if (!user) {
-      setWithdrawnTotal(0);
-      return;
-    }
     setWithdrawnTotal(readWithdrawnTotal(user._id));
   }, [user]);
-
-  useEffect(() => {
-    if (!user) {
-      return;
-    }
-
-    let active = true;
-    const run = async () => {
-      try {
-        setLoading(true);
-        await refreshOrders(user);
-      } catch (err) {
-        if (active) {
-          setError(err instanceof Error ? err.message : "Failed to refresh orders");
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void run();
-    const timer = setInterval(() => void run(), POLL_MS);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [refreshOrders, user]);
 
   const navigate = (target: PageId, orderId?: string) => {
     setPage(target);
@@ -423,195 +343,87 @@ export default function Home() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const persistUser = (nextUser: AppUser) => {
-    setUser(nextUser);
-    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(nextUser));
-  };
-
-  const signOut = () => {
-    localStorage.removeItem(USER_STORAGE_KEY);
-    setUser(null);
+  const switchAccount = useCallback(() => {
+    setUser((prev) => {
+      const next = prev._id === DEMO_BOB_ID ? ALICE_USER : BOB_USER;
+      try {
+        localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        /* demo storage */
+      }
+      return next;
+    });
     setPage("home");
     setSelectedOrderId(null);
-    setOrders([]);
-    setError("");
-    setProofByOrderId({});
-    setLoginForm({
-      name: "",
-      sbuEmail: "",
-      venmoHandle: "",
-      year: "",
-    });
-  };
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
 
-  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setError("");
-    setLoading(true);
-    const response = await fetch("/api/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: loginForm.name,
-        sbuEmail: loginForm.sbuEmail,
-        venmoHandle: loginForm.venmoHandle,
-        roles: ["requester", "fulfiller"],
-      }),
-    });
-    const payload = await response.json();
-    setLoading(false);
-    if (!response.ok || !payload.user) {
-      setError(payload.error ?? "Login failed");
-      return;
-    }
+  const claimOrder = useCallback(
+    (orderId: string) => {
+      const result = claimLocalOrder(localOrdersRef.current, orderId, user._id);
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      saveLocalOrders(result.orders);
+      setLocalOrders(result.orders);
+      setError("");
+      navigate("status", orderId);
+    },
+    [user._id]
+  );
 
-    const nextUser: AppUser = {
-      _id: payload.user._id,
-      name: payload.user.name,
-      sbuEmail: payload.user.sbuEmail,
-      venmoHandle: payload.user.venmoHandle,
-      year: loginForm.year || "Student",
-    };
-    persistUser(nextUser);
-  };
+  const updateOrderStatus = useCallback(
+    (
+      orderId: string,
+      status: Exclude<OrderStatus, "PENDING" | "CLAIMED">,
+      extra?: { orderConfirmation?: string }
+    ) => {
+      const prev = localOrdersRef.current;
+      const result =
+        status === "PLACED"
+          ? markPlacedLocalOrder(prev, orderId, user._id, extra?.orderConfirmation ?? "")
+          : status === "PICKED_UP"
+            ? markPickedUpLocalOrder(prev, orderId, user._id)
+            : completeLocalOrder(prev, orderId, user._id);
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      saveLocalOrders(result.orders);
+      setLocalOrders(result.orders);
+      setError("");
+    },
+    [user._id]
+  );
 
-  const demoSwitchUser = async () => {
-    if (!user) return;
-    
-    const isAlice = user.sbuEmail === "alice@stonybrook.edu";
-    
-    const nextProfile = isAlice ? {
-      name: "Bob (Demo)",
-      sbuEmail: "bob@stonybrook.edu",
-      venmoHandle: "@bob-venmo",
-      year: "Freshman"
-    } : {
-      name: "Alice (Demo)",
-      sbuEmail: "alice@stonybrook.edu",
-      venmoHandle: "@alice-venmo",
-      year: "Senior"
-    };
-
-    setLoading(true);
-    const response = await fetch("/api/users", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: nextProfile.name,
-        sbuEmail: nextProfile.sbuEmail,
-        venmoHandle: nextProfile.venmoHandle,
-        roles: ["requester", "fulfiller"],
-      }),
-    });
-    const payload = await response.json();
-    setLoading(false);
-    
-    if (response.ok && payload.user) {
-      persistUser({
-        _id: payload.user._id,
-        ...nextProfile
-      });
-      navigate("home");
-    } else {
-      setError("Failed to switch demo user");
-    }
-  };
-
-  const claimOrder = async (orderId: string) => {
-    if (!user) {
-      return;
-    }
-    const response = await fetch(`/api/orders/${orderId}/claim`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fulfillerId: user._id }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      setError(payload.error ?? "Unable to claim");
-      return;
-    }
-    await refreshOrders(user);
-    navigate("status", orderId);
-  };
-
-  const updateOrderStatus = async (
-    orderId: string,
-    status: Exclude<OrderStatus, "PENDING" | "CLAIMED">,
-    extra?: { orderConfirmation?: string }
-  ) => {
-    if (!user) {
-      return;
-    }
-    if (status === "PLACED" && !user._id) {
-      setError("Sign in to mark this order placed.");
-      return;
-    }
-    const routeMap: Record<string, string> = {
-      PLACED: "place",
-      PICKED_UP: "picked-up",
-      COMPLETED: "complete",
-    };
-    const route = routeMap[status];
-    const body =
-      status === "PLACED"
-        ? {
-            fulfillerId: user._id,
-            proofValue: (extra?.orderConfirmation ?? "").trim(),
-          }
-        : { requesterId: user._id };
-
-    const response = await fetch(`/api/orders/${orderId}/${route}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      setError(payload.error ?? "Status update failed");
-      return;
-    }
-    await refreshOrders(user);
-  };
-
-  const addOrder = async (order: {
-    location: string;
-    orderDetails: string;
-    originalPrice: number;
-    pickupTime: string;
-  }) => {
-    if (!user) {
-      return;
-    }
-    const response = await fetch("/api/orders", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+  const addOrder = useCallback(
+    (order: {
+      location: string;
+      orderDetails: string;
+      originalPrice: number;
+      pickupTime: string;
+    }) => {
+      const result = createLocalOrder(localOrdersRef.current, {
         requesterId: user._id,
         location: order.location,
         orderDetails: order.orderDetails,
         originalPrice: order.originalPrice,
         pickupWindow: order.pickupTime,
-      }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      setError(payload.error ?? "Failed to create order");
-      return;
-    }
-    await refreshOrders(user);
-    navigate("status", payload.orderId);
-  };
+      });
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      saveLocalOrders(result.orders);
+      setLocalOrders(result.orders);
+      setError("");
+      navigate("status", result.orderId);
+    },
+    [user._id]
+  );
 
   const stats = useMemo(() => {
-    if (!user) {
-      return {
-        totalEarned: 0,
-        totalSaved: 0,
-        fulfillJobsCount: 0,
-        requesterCompletedCount: 0,
-      };
-    }
     const claimedAsFulfiller = orders.filter(
       (order) => order.fulfillerId === user._id && order.status !== "PENDING"
     );
@@ -633,17 +445,11 @@ export default function Home() {
   }, [orders, user]);
 
   const walletAvailable = useMemo(() => {
-    if (!user) {
-      return 0;
-    }
     return Math.max(0, Math.round((stats.totalEarned - withdrawnTotal) * 100) / 100);
-  }, [user, stats.totalEarned, withdrawnTotal]);
+  }, [stats.totalEarned, withdrawnTotal]);
 
   const confirmWithdraw = useCallback(
     (amount: number) => {
-      if (!user) {
-        return;
-      }
       const rounded = Math.round(amount * 100) / 100;
       const cap = Math.max(0, Math.round((stats.totalEarned - withdrawnTotal) * 100) / 100);
       if (rounded <= 0 || rounded > cap + 0.001) {
@@ -657,86 +463,9 @@ export default function Home() {
     [user, stats.totalEarned, withdrawnTotal]
   );
 
-  if (!user) {
-    return (
-      <div className="relative min-h-dvh overflow-hidden">
-        <LoginSceneBackdrop />
-        {/* Mockup: red square cutlery mark — screen top-left */}
-        <div
-          className="pointer-events-none fixed left-5 top-5 z-20 flex h-11 w-11 items-center justify-center rounded-lg bg-sbu shadow-sm md:left-7 md:top-7"
-          aria-hidden
-        >
-          <UtensilsCrossed className="h-6 w-6 text-white" strokeWidth={2.5} />
-        </div>
-        <main className="relative z-10 flex min-h-dvh items-center justify-center px-4 py-10">
-          <div
-            className="card relative mx-auto w-full max-w-xl space-y-4 p-6 shadow-[0_4px_24px_-4px_rgba(0,0,0,0.15),0_28px_56px_-20px_rgba(0,0,0,0.25)]"
-          >
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-sbu">
-                The Campus Food Exchange
-              </p>
-              <h1 className="font-display text-4xl font-bold text-gray-900">Connect your account</h1>
-              <p className="mt-2 text-sm text-gray-600">
-                <strong>Turn Dining Dollars into cash, or eat for half price.</strong>
-              </p>
-              <p className="mt-1 text-sm text-gray-500">
-                One account can post requests and claim others&apos; orders. Use Demo Switch Account or sign out
-                to try a second student in the same browser.
-              </p>
-            </div>
-            <form onSubmit={handleLogin} className="space-y-3">
-            <input
-              className="input-field"
-              placeholder="Full name"
-              value={loginForm.name}
-              onChange={(event) =>
-                setLoginForm((prev) => ({ ...prev, name: event.target.value }))
-              }
-            />
-            <input
-              className="input-field"
-              type="email"
-              placeholder="SBU email"
-              value={loginForm.sbuEmail}
-              onChange={(event) =>
-                setLoginForm((prev) => ({ ...prev, sbuEmail: event.target.value }))
-              }
-            />
-            <input
-              className={`input-field ${
-                error
-                  ? "border-2 border-sbu ring-2 ring-sbu ring-offset-2 ring-offset-white"
-                  : ""
-              }`}
-              placeholder="Venmo handle"
-              value={loginForm.venmoHandle}
-              onChange={(event) =>
-                setLoginForm((prev) => ({ ...prev, venmoHandle: event.target.value }))
-              }
-            />
-            <input
-              className="input-field"
-              placeholder="Year (optional)"
-              value={loginForm.year}
-              onChange={(event) =>
-                setLoginForm((prev) => ({ ...prev, year: event.target.value }))
-              }
-            />
-            <button className="btn-primary" disabled={loading}>
-              {loading ? "Entering..." : "Enter app"}
-            </button>
-            {error ? <p className="text-sm text-red-600">{error}</p> : null}
-          </form>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-dvh bg-[#F7F6F3] font-sans">
-      <Navbar page={page} navigate={navigate} signOut={signOut} demoSwitchUser={demoSwitchUser} />
+      <Navbar page={page} navigate={navigate} user={user} switchAccount={switchAccount} />
       <main className="mx-auto max-w-5xl px-4 pb-24 pt-4 sm:px-6 md:pb-12 md:pt-6 lg:px-8">
         {page === "home" && (
           <HomeView
@@ -782,8 +511,6 @@ export default function Home() {
             orders={orders}
             stats={stats}
             navigate={navigate}
-            signOut={signOut}
-            demoSwitchUser={demoSwitchUser}
             wallet={{
               grossEarned: stats.totalEarned,
               withdrawn: withdrawnTotal,
@@ -958,18 +685,20 @@ function WithdrawToBankModal({
 function Navbar({
   page,
   navigate,
-  signOut,
-  demoSwitchUser,
+  user,
+  switchAccount,
 }: {
   page: PageId;
   navigate: (target: PageId, orderId?: string) => void;
-  signOut: () => void;
-  demoSwitchUser: () => void;
+  user: AppUser;
+  switchAccount: () => void;
 }) {
+  const isBob = user.sbuEmail.trim().toLowerCase() === DEMO_BOB_EMAIL;
+  const switchLabel = isBob ? "Switch to Alice" : "Switch to Bob";
   const navItems = [
     { id: "home" as const, label: "Home" },
     { id: "marketplace" as const, label: "Orders" },
-    { id: "request" as const, label: "Post", primary: true },
+    { id: "request" as const, label: "Post" },
     { id: "profile" as const, label: "Profile" },
   ];
 
@@ -990,17 +719,6 @@ function Navbar({
               {navItems.map((item) => {
                 const target = item.id;
                 const isActive = page === target;
-                if (item.primary) {
-                  return (
-                    <button
-                      key={item.label}
-                      onClick={() => navigate(target)}
-                      className="ml-1 shrink-0 rounded-full bg-sbu px-4 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-sbu-dark"
-                    >
-                      {item.label}
-                    </button>
-                  );
-                }
                 return (
                   <button
                     key={item.label}
@@ -1020,18 +738,11 @@ function Navbar({
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
             <button
               type="button"
-              onClick={demoSwitchUser}
+              onClick={switchAccount}
               className="rounded-full bg-purple-100 px-2.5 py-1.5 text-[11px] font-bold text-purple-700 hover:bg-purple-200 sm:px-3 sm:text-xs"
-              title="Demo: Switch to another account"
+              title={switchLabel}
             >
-              Demo Switch Account
-            </button>
-            <button
-              type="button"
-              onClick={signOut}
-              className="rounded-lg px-2 py-1.5 text-[11px] font-semibold text-gray-500 hover:bg-stone-100 hover:text-gray-900 sm:px-3 sm:text-xs"
-            >
-              Sign out
+              {switchLabel}
             </button>
           </div>
         </div>
@@ -1045,22 +756,6 @@ function Navbar({
           {navItems.map((item) => {
             const target = item.id;
             const isActive = page === target;
-            if (item.primary) {
-              return (
-                <button
-                  key={item.label}
-                  onClick={() => navigate(target)}
-                  className={`flex min-w-0 flex-1 flex-col items-center justify-center rounded-xl py-1.5 text-[10px] font-bold ${
-                    isActive ? "text-sbu" : "text-gray-500"
-                  }`}
-                >
-                  <span className="mb-0.5 flex h-9 w-9 items-center justify-center rounded-xl bg-sbu text-sm text-white">
-                    +
-                  </span>
-                  {item.label}
-                </button>
-              );
-            }
             return (
               <button
                 key={item.label}
@@ -1104,7 +799,7 @@ function HomeView({
   navigate: (target: PageId, orderId?: string) => void;
   user: AppUser;
   orders: UiOrder[];
-  claimOrder: (orderId: string) => Promise<void>;
+  claimOrder: (orderId: string) => void;
   stats: {
     totalEarned: number;
     totalSaved: number;
@@ -1362,7 +1057,7 @@ function MarketplaceView({
   orders: UiOrder[];
   user: AppUser;
   navigate: (target: PageId, orderId?: string) => void;
-  claimOrder: (orderId: string) => Promise<void>;
+  claimOrder: (orderId: string) => void;
 }) {
   const [locationFilter, setLocationFilter] = useState<string>("All");
   const visibleOrders = orders
@@ -1425,7 +1120,7 @@ function OrderCard({
 }: {
   order: UiOrder;
   user: AppUser;
-  onTake: (orderId: string) => Promise<void>;
+  onTake: (orderId: string) => void;
   onViewStatus: (orderId: string) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -1518,7 +1213,7 @@ function RequestOrderView({
     orderDetails: string;
     originalPrice: number;
     pickupTime: string;
-  }) => Promise<void>;
+  }) => void;
 }) {
   const [form, setForm] = useState({
     location: "",
@@ -1607,173 +1302,337 @@ function RequestOrderView({
   };
 
   return (
-    <div className="mx-auto max-w-2xl space-y-5 pt-2">
-      <div>
-        <h2 className="font-display text-3xl font-bold text-gray-900">Post a Request</h2>
-        <p className="mt-1 text-sm text-gray-400">
-          Students with dining dollars will see this and place your order.
-        </p>
-      </div>
-
-      <div className="space-y-4">
-        <div>
-          <label className="label">Dining Location</label>
-          <select
-            className={`input-field ${errors.location ? "border-red-400" : ""}`}
-            value={form.location}
-            onChange={(event) => {
-              setForm((prev) => ({ ...prev, location: event.target.value }));
-              setCart({}); // Reset cart on location change
-            }}
-          >
-            <option value="">Choose a location…</option>
-            {LOCATIONS.map((location) => (
-              <option key={location} value={location}>
-                {location} {["Savor", "Smash N' Shake", "Popeyes", "Subway"].includes(location) ? "(Menu Available)" : ""}
-              </option>
-            ))}
-          </select>
+    <div className="mx-auto max-w-3xl pb-10 pt-2">
+      <div className="overflow-hidden rounded-3xl border border-stone-200/90 bg-white shadow-card">
+        <div className="relative border-b border-stone-100 bg-gradient-to-br from-sbu-50 via-white to-amber-50/50 px-5 py-7 sm:px-8 sm:py-9">
+          <div
+            className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-sbu/[0.06]"
+            aria-hidden
+          />
+          <div
+            className="pointer-events-none absolute bottom-0 left-1/3 h-32 w-32 -translate-x-1/2 translate-y-1/2 rounded-full bg-amber-300/15"
+            aria-hidden
+          />
+          <p className="relative text-xs font-semibold uppercase tracking-wider text-sbu">Campus marketplace</p>
+          <h2 className="relative mt-1 font-display text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
+            Post a request
+          </h2>
+          <p className="relative mt-3 max-w-xl text-sm leading-relaxed text-gray-600">
+            A student with dining dollars claims your request, orders on Nutrislice, and you meet on campus. You pay{" "}
+            <strong className="font-semibold text-gray-900">half the menu price</strong> — they get paid when you
+            confirm pickup.
+          </p>
+          <div className="relative mt-5 flex flex-wrap gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-green-200/90 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-800 shadow-sm">
+              <span className="text-green-600" aria-hidden>
+                ✓
+              </span>
+              50% off Nutrislice total
+            </span>
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-stone-200 bg-white/90 px-3 py-1.5 text-xs font-semibold text-gray-700 shadow-sm">
+              Open to all dining locations
+            </span>
+          </div>
         </div>
 
-        {activeMenu ? (
-          <div className="space-y-6">
-            {Object.entries(
-              activeMenu.reduce((acc, item) => {
-                if (!acc[item.category]) acc[item.category] = [];
-                acc[item.category].push(item);
-                return acc;
-              }, {} as Record<string, MenuItem[]>)
-            ).map(([category, items]) => (
-              <div key={category} className="space-y-3">
-                <h3 className="font-display text-lg font-bold text-gray-900">{category}</h3>
-                <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-                  {items.map((item) => {
-                    const qty = cart[item.id] || 0;
-                    return (
-                      <div key={item.id} className="card flex flex-col justify-between p-3">
-                        <div className="mb-3">
-                          <p className="text-xs font-bold text-gray-900">{item.name}</p>
-                          <p className="text-[11px] text-gray-500">${item.price.toFixed(2)}</p>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          {qty > 0 ? (
-                            <div className="flex items-center gap-3">
-                              <button
-                                type="button"
-                                onClick={() => updateCart(item.id, -1)}
-                                className="flex h-7 w-7 items-center justify-center rounded-full bg-stone-100 text-gray-600 hover:bg-stone-200"
-                              >
-                                -
-                              </button>
-                              <span className="text-sm font-bold text-gray-900">{qty}</span>
-                              <button
-                                type="button"
-                                onClick={() => updateCart(item.id, 1)}
-                                className="flex h-7 w-7 items-center justify-center rounded-full bg-sbu text-white hover:bg-sbu-dark"
-                              >
-                                +
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => updateCart(item.id, 1)}
-                              className="rounded-full bg-stone-100 px-3 py-1 text-xs font-semibold text-gray-700 hover:bg-stone-200"
-                            >
-                              Add +
-                            </button>
-                          )}
-                        </div>
+        <div className="space-y-10 p-5 sm:p-8">
+          <section className="space-y-4">
+            <div className="flex items-start gap-3">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sbu text-sm font-bold text-white shadow-sm">
+                1
+              </span>
+              <div className="min-w-0 pt-0.5">
+                <h3 className="font-display text-lg font-bold text-gray-900">Where are you eating?</h3>
+                <p className="text-xs text-gray-500">
+                  Spots with a <span className="font-semibold text-sbu">Menu</span> tag include built-in Nutrislice
+                  items; elsewhere, describe your order free-form.
+                </p>
+              </div>
+            </div>
+            <div
+              className={`grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 ${errors.location ? "rounded-2xl ring-2 ring-red-300/80 ring-offset-2 ring-offset-white" : ""}`}
+            >
+              {LOCATIONS.map((location) => {
+                const hasMenu = MENU_LOCATION_IDS.has(location);
+                const selected = form.location === location;
+                return (
+                  <button
+                    key={location}
+                    type="button"
+                    onClick={() => {
+                      setForm((prev) => ({ ...prev, location }));
+                      setCart({});
+                      setErrors((prev) => {
+                        const next = { ...prev };
+                        delete next.location;
+                        return next;
+                      });
+                    }}
+                    className={`rounded-2xl border px-3 py-3 text-left transition-all ${
+                      selected
+                        ? "border-sbu bg-sbu-50 text-sbu-dark shadow-sm ring-2 ring-sbu/20"
+                        : "border-stone-200 bg-stone-50/70 text-gray-800 hover:border-stone-300 hover:bg-white hover:shadow-sm"
+                    }`}
+                  >
+                    <span className="line-clamp-2 text-sm font-semibold leading-snug">{location}</span>
+                    {hasMenu ? (
+                      <span className="mt-2 inline-block rounded-md bg-white/80 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sbu">
+                        Menu
+                      </span>
+                    ) : (
+                      <span className="mt-2 block text-[10px] font-medium uppercase tracking-wide text-gray-400">
+                        Custom
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            {errors.location ? <p className="text-sm font-medium text-red-600">{errors.location}</p> : null}
+          </section>
+
+          <section className="space-y-4">
+            <div className="flex items-start gap-3">
+              <span
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold shadow-sm ${
+                  form.location ? "bg-sbu text-white" : "bg-stone-200 text-gray-500"
+                }`}
+              >
+                2
+              </span>
+              <div className="min-w-0 pt-0.5">
+                <h3 className="font-display text-lg font-bold text-gray-900">What&apos;s on the order?</h3>
+                <p className="text-xs text-gray-500">
+                  {activeMenu
+                    ? "Tap items to build your cart — totals match Nutrislice list prices."
+                    : form.location
+                      ? "Describe exactly what you want so a fulfiller can order it correctly."
+                      : "Pick a location first."}
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-stone-100 bg-gradient-to-b from-stone-50/80 to-white p-4 sm:p-5">
+              {activeMenu ? (
+                <div className="space-y-8">
+                  {Object.entries(
+                    activeMenu.reduce((acc, item) => {
+                      if (!acc[item.category]) acc[item.category] = [];
+                      acc[item.category].push(item);
+                      return acc;
+                    }, {} as Record<string, MenuItem[]>)
+                  ).map(([category, items]) => (
+                    <div key={category} className="space-y-4">
+                      <div className="flex items-center gap-3">
+                        <h4 className="font-display text-base font-bold text-gray-900">{category}</h4>
+                        <span className="h-px flex-1 bg-gradient-to-r from-stone-200 to-transparent" />
                       </div>
-                    );
-                  })}
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {items.map((item) => {
+                          const qty = cart[item.id] || 0;
+                          const inCart = qty > 0;
+                          return (
+                            <div
+                              key={item.id}
+                              className={`flex flex-col justify-between rounded-2xl border bg-white p-3.5 transition-all ${
+                                inCart
+                                  ? "border-sbu/35 shadow-md ring-2 ring-sbu/15"
+                                  : "border-stone-100 shadow-card hover:border-stone-200 hover:shadow-card-hover"
+                              }`}
+                            >
+                              <div className="mb-3 min-h-[2.75rem]">
+                                <p className="text-sm font-bold leading-snug text-gray-900">{item.name}</p>
+                                <p className="mt-1 font-display text-lg font-bold text-sbu">${item.price.toFixed(2)}</p>
+                              </div>
+                              <div className="flex items-center justify-between border-t border-stone-100 pt-2">
+                                {qty > 0 ? (
+                                  <div className="flex w-full items-center justify-between gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => updateCart(item.id, -1)}
+                                      className="flex h-9 w-9 items-center justify-center rounded-xl bg-stone-100 text-lg font-medium text-gray-700 transition-colors hover:bg-stone-200"
+                                      aria-label="Decrease quantity"
+                                    >
+                                      −
+                                    </button>
+                                    <span className="min-w-[2ch] text-center text-base font-bold tabular-nums text-gray-900">
+                                      {qty}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => updateCart(item.id, 1)}
+                                      className="flex h-9 w-9 items-center justify-center rounded-xl bg-sbu text-lg font-medium text-white transition-colors hover:bg-sbu-dark"
+                                      aria-label="Increase quantity"
+                                    >
+                                      +
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => updateCart(item.id, 1)}
+                                    className="w-full rounded-xl border border-stone-200 bg-stone-50 py-2 text-xs font-bold text-gray-800 transition-colors hover:border-sbu/30 hover:bg-sbu-50/50 hover:text-sbu-dark"
+                                  >
+                                    Add to order
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+
+                  {isSubway && (
+                    <div className="space-y-2 border-t border-stone-200 pt-6">
+                      <h4 className="font-display text-base font-bold text-gray-900">Customizations</h4>
+                      <p className="text-xs text-gray-500">
+                        Bread, cheese, veggies, sauces — helps your fulfiller build it right on Nutrislice.
+                      </p>
+                      <textarea
+                        rows={3}
+                        className="input-field resize-none bg-white"
+                        placeholder="e.g. Italian Herbs & Cheese, Pepper Jack, toasted, lettuce, tomatoes, chipotle southwest"
+                        value={form.customizations}
+                        onChange={(event) => setForm((prev) => ({ ...prev, customizations: event.target.value }))}
+                      />
+                    </div>
+                  )}
+
+                  {errors.orderDetails ? (
+                    <p className="text-sm font-medium text-red-600">{errors.orderDetails}</p>
+                  ) : null}
+                </div>
+              ) : form.location ? (
+                <div className="space-y-4">
+                  <div>
+                    <label className="label">Order details</label>
+                    <textarea
+                      rows={5}
+                      className={`input-field resize-none bg-white ${errors.orderDetails ? "border-red-400" : ""}`}
+                      placeholder="Be specific: entrée, sides, drink, size, and any dietary notes."
+                      value={form.orderDetails}
+                      onChange={(event) => setForm((prev) => ({ ...prev, orderDetails: event.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="label">Full menu price</label>
+                    <div className="relative">
+                      <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-gray-400">
+                        $
+                      </span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className={`input-field bg-white pl-8 ${errors.originalPrice ? "border-red-400" : ""}`}
+                        placeholder="0.00"
+                        value={form.originalPrice}
+                        onChange={(event) => setForm((prev) => ({ ...prev, originalPrice: event.target.value }))}
+                      />
+                    </div>
+                  </div>
+                  {errors.originalPrice ? (
+                    <p className="text-sm font-medium text-red-600">{errors.originalPrice}</p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="py-6 text-center text-sm text-gray-400">Choose a dining hall or venue in step 1.</p>
+              )}
+            </div>
+          </section>
+
+          <section className="space-y-4">
+            <div className="flex items-start gap-3">
+              <span
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold shadow-sm ${
+                  form.location ? "bg-sbu text-white" : "bg-stone-200 text-gray-500"
+                }`}
+              >
+                3
+              </span>
+              <div className="min-w-0 flex-1 pt-0.5 sm:flex sm:items-start sm:justify-between sm:gap-6">
+                <div>
+                  <h3 className="font-display text-lg font-bold text-gray-900">Pickup window</h3>
+                  <p className="text-xs text-gray-500">When you can meet on campus to grab the food.</p>
+                </div>
+                <div className="mt-3 w-full sm:mt-0 sm:max-w-[220px]">
+                  <label className="label sr-only" htmlFor="post-pickup-time">
+                    Time
+                  </label>
+                  <input
+                    id="post-pickup-time"
+                    type="time"
+                    className={`input-field bg-white ${errors.pickupTime ? "border-red-400" : ""}`}
+                    value={form.pickupTime}
+                    onChange={(event) => setForm((prev) => ({ ...prev, pickupTime: event.target.value }))}
+                  />
                 </div>
               </div>
-            ))}
-            
-            {isSubway && (
-              <div className="space-y-3 pt-2">
-                <h3 className="font-display text-lg font-bold text-gray-900">Customizations</h3>
-                <p className="text-xs text-gray-500">List your bread, cheese, veggies, and sauces here.</p>
-                <textarea
-                  rows={3}
-                  className="input-field resize-none"
-                  placeholder="e.g. Italian Herbs & Cheese, Pepper Jack, toasted, lettuce, tomatoes, chipotle southwest"
-                  value={form.customizations}
-                  onChange={(event) => setForm((prev) => ({ ...prev, customizations: event.target.value }))}
-                />
+            </div>
+            {errors.pickupTime ? <p className="text-sm font-medium text-red-600">{errors.pickupTime}</p> : null}
+          </section>
+
+          {discountedPrice && effectiveOriginalPrice ? (
+            <div className="overflow-hidden rounded-2xl border border-green-200/90 bg-gradient-to-br from-green-50 via-white to-emerald-50/40 p-5 shadow-sm">
+              <p className="text-xs font-semibold uppercase tracking-wider text-green-700">Your price</p>
+              <div className="mt-3 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-xs font-medium text-gray-500">Menu total</p>
+                  <p className="font-display text-2xl font-bold text-gray-400 line-through decoration-stone-300">
+                    ${parseFloat(effectiveOriginalPrice).toFixed(2)}
+                  </p>
+                </div>
+                <div className="text-left sm:text-right">
+                  <p className="text-xs font-medium text-green-800">You pay (50%)</p>
+                  <p className="font-display text-4xl font-black tracking-tight text-green-700">${discountedPrice}</p>
+                </div>
               </div>
-            )}
+              <p className="mt-3 text-xs leading-relaxed text-gray-600">
+                The rest covers your fulfiller after you confirm pickup — same flow as the rest of the app.
+              </p>
+            </div>
+          ) : null}
 
-            {errors.orderDetails && <p className="text-sm text-red-500">{errors.orderDetails}</p>}
+          {showPreview && discountedPrice ? (
+            <div className="space-y-3 rounded-2xl border border-sbu/25 bg-gradient-to-br from-sbu-50 to-white p-5 shadow-sm">
+              <p className="font-display text-base font-bold text-gray-900">Payment preview</p>
+              <div className="flex items-center justify-between rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-stone-100 to-stone-50 ring-1 ring-stone-200">
+                    <span className="text-[9px] font-bold tracking-tight text-gray-500">VISA</span>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-400">Demo card</p>
+                    <p className="font-semibold text-gray-800">•••• 4242</p>
+                  </div>
+                </div>
+                <span className="text-xs font-bold text-sbu">Change</span>
+              </div>
+              <p className="text-xs leading-relaxed text-gray-600">
+                Your card will be charged <span className="font-bold text-gray-900">${discountedPrice}</span> now.
+                Funds release to the fulfiller when you mark the order received.
+              </p>
+            </div>
+          ) : null}
+
+          <div className="flex flex-col gap-3 pt-1 sm:flex-row sm:flex-row-reverse">
+            <button type="button" onClick={() => void submit()} className="btn-primary sm:flex-1">
+              {showPreview ? `Pay $${discountedPrice} & post` : "Proceed to payment"}
+            </button>
+            {showPreview ? (
+              <button
+                type="button"
+                className="w-full rounded-xl border border-stone-200 bg-white px-4 py-3.5 text-sm font-semibold text-gray-800 shadow-sm transition-all hover:bg-stone-50 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-2 sm:w-auto sm:min-w-[148px]"
+                onClick={() => setShowPreview(false)}
+              >
+                Edit order
+              </button>
+            ) : null}
           </div>
-        ) : (
-          <>
-            <div>
-              <label className="label">What do you want?</label>
-              <textarea
-                rows={4}
-                className={`input-field resize-none ${errors.orderDetails ? "border-red-400" : ""}`}
-                value={form.orderDetails}
-                onChange={(event) => setForm((prev) => ({ ...prev, orderDetails: event.target.value }))}
-              />
-            </div>
-
-            <div>
-              <label className="label">Menu price</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                className={`input-field ${errors.originalPrice ? "border-red-400" : ""}`}
-                value={form.originalPrice}
-                onChange={(event) => setForm((prev) => ({ ...prev, originalPrice: event.target.value }))}
-              />
-            </div>
-          </>
-        )}
-
-        <div>
-          <label className="label">Pickup window</label>
-          <input
-            type="time"
-            className={`input-field ${errors.pickupTime ? "border-red-400" : ""}`}
-            value={form.pickupTime}
-            onChange={(event) => setForm((prev) => ({ ...prev, pickupTime: event.target.value }))}
-          />
         </div>
       </div>
-
-      {discountedPrice && (
-        <div className="card border-green-200 bg-green-50 p-4">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-green-600">Your deal</p>
-          <p className="text-sm text-gray-500">
-            You pay <span className="text-xl font-black text-green-700">${discountedPrice}</span> (50%
-            off)
-          </p>
-        </div>
-      )}
-
-      {showPreview && (
-        <div className="card border-sbu/20 bg-sbu-50 p-4 text-sm space-y-3">
-          <p className="font-semibold text-gray-900">Payment Details</p>
-          <div className="flex items-center justify-between rounded-xl border border-stone-200 bg-white p-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-6 w-10 items-center justify-center rounded bg-stone-100">
-                <span className="text-[10px] font-bold text-gray-500">CARD</span>
-              </div>
-              <span className="font-medium text-gray-700">•••• 4242</span>
-            </div>
-            <span className="text-xs font-semibold text-sbu">Change</span>
-          </div>
-          <p className="text-xs text-gray-500">
-            Your card will be charged <span className="font-bold">${discountedPrice}</span> now. The fulfiller will receive this money once you confirm pickup.
-          </p>
-        </div>
-      )}
-      <button onClick={() => void submit()} className="btn-primary">
-        {showPreview ? `Pay $${discountedPrice} & post order` : "Proceed to payment"}
-      </button>
     </div>
   );
 }
@@ -1796,7 +1655,7 @@ function OrderStatusView({
     orderId: string,
     status: Exclude<OrderStatus, "PENDING" | "CLAIMED">,
     extra?: { orderConfirmation?: string }
-  ) => Promise<void>;
+  ) => void;
   navigate: (target: PageId, orderId?: string) => void;
 }) {
   const order = orders.find((row) => row.id === orderId);
@@ -1816,14 +1675,105 @@ function OrderStatusView({
   const isRequester = order.requesterId === user._id;
   const isFulfiller = order.fulfillerId === user._id;
 
+  const STATUS_STEPS = ["PENDING", "CLAIMED", "PLACED", "COMPLETED"];
+  const currentStepIndex = STATUS_STEPS.indexOf(order.status);
+  const progressPercent = Math.max(5, (currentStepIndex / (STATUS_STEPS.length - 1)) * 100);
+
   return (
     <div className="space-y-5 pt-2">
+      {isRequester ? (
+        <div className="mb-8">
+          <div className="relative mb-6 h-1.5 w-full rounded-full bg-stone-200">
+            <div
+              className="absolute left-0 top-0 h-full rounded-full bg-sbu transition-all duration-700 ease-out"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+          {order.status === "PENDING" && (
+            <div className="flex flex-col items-center justify-center py-6 text-center">
+              <div className="relative mb-8 flex h-24 w-24 items-center justify-center">
+                <div
+                  className="absolute inset-0 animate-ping rounded-full bg-sbu/20"
+                  style={{ animationDuration: "2s" }}
+                />
+                <div
+                  className="absolute inset-2 animate-ping rounded-full bg-sbu/30"
+                  style={{ animationDuration: "2s", animationDelay: "0.5s" }}
+                />
+                <div className="relative z-10 flex h-14 w-14 items-center justify-center rounded-full bg-sbu text-white shadow-lg">
+                  <svg className="h-6 w-6 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                    />
+                  </svg>
+                </div>
+              </div>
+              <h3 className="font-display text-2xl font-bold text-gray-900">Finding a match...</h3>
+              <p className="mt-2 max-w-xs text-sm text-gray-500">
+                Your request is live. We&apos;re looking for a student with dining dollars to claim your order.
+              </p>
+            </div>
+          )}
+          {order.status === "CLAIMED" && (
+            <div className="flex flex-col items-center justify-center py-6 text-center">
+              <div className="relative mb-8 flex h-24 w-24 items-center justify-center rounded-full bg-green-50">
+                <svg
+                  className="h-10 w-10 animate-bounce text-green-500"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <h3 className="font-display text-2xl font-bold text-gray-900">Match found!</h3>
+              <p className="mt-2 max-w-xs text-sm text-gray-500">
+                <strong className="font-semibold text-gray-900">{order.fulfillerName || "Someone"}</strong> is
+                placing your order on Nutrislice right now.
+              </p>
+            </div>
+          )}
+          {order.status === "PLACED" && (
+            <div className="flex flex-col items-center justify-center py-6 text-center">
+              <div className="relative mb-8 flex h-24 w-24 items-center justify-center rounded-full bg-blue-50">
+                <svg className="h-10 w-10 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"
+                  />
+                </svg>
+              </div>
+              <h3 className="font-display text-2xl font-bold text-gray-900">Ready for pickup</h3>
+              <p className="mt-2 max-w-xs text-sm text-gray-500">
+                Your order has been placed. Head to the dining location during your pickup window.
+              </p>
+            </div>
+          )}
+          {order.status === "COMPLETED" && (
+            <div className="flex flex-col items-center justify-center py-6 text-center">
+              <div className="relative mb-8 flex h-24 w-24 items-center justify-center rounded-full bg-stone-100">
+                <svg className="h-10 w-10 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <h3 className="font-display text-2xl font-bold text-gray-900">Order complete</h3>
+              <p className="mt-2 max-w-xs text-sm text-gray-500">Enjoy your food!</p>
+            </div>
+          )}
+        </div>
+      ) : null}
+
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="font-display text-3xl font-bold text-gray-900">{order.location}</h2>
           <p className="text-xs text-gray-400">{order.createdAt}</p>
         </div>
-        <StatusBadge status={order.status} size="lg" />
+        {!isRequester && <StatusBadge status={order.status} size="lg" />}
       </div>
 
       <div className="card space-y-2 p-4">
@@ -1834,32 +1784,6 @@ function OrderStatusView({
           <p className="text-sm text-sbu">Confirmation: {order.orderConfirmation}</p>
         )}
       </div>
-
-      {isRequester && order.status === "PENDING" && (
-        <div className="card border-amber-200 bg-amber-50 p-4">
-          <p className="text-sm font-semibold text-amber-900">Still on the marketplace</p>
-          <p className="mt-1 text-xs text-amber-800">
-            No one has claimed this yet. A student with dining dollars still needs to tap &quot;Take it&quot;
-            before anything is ordered on Nutrislice.
-          </p>
-        </div>
-      )}
-
-      {isRequester && order.status === "CLAIMED" && (
-        <div className="card border-green-200 bg-green-50 p-4">
-          <p className="text-sm font-semibold text-green-900">Someone took your order</p>
-          <p className="mt-1 text-xs text-green-800">
-            {order.fulfillerName ? (
-              <>
-                <span className="font-semibold">{order.fulfillerName}</span> claimed it and should be
-                placing it on Nutrislice now. You&apos;ll see &quot;Order Placed&quot; when they finish.
-              </>
-            ) : (
-              <>A fulfiller claimed it and is placing it on Nutrislice. Status will update when they mark it placed.</>
-            )}
-          </p>
-        </div>
-      )}
 
       {isFulfiller && order.status === "CLAIMED" && (
         <div className="card space-y-3 p-4">
@@ -1908,8 +1832,6 @@ function ProfileView({
   orders,
   stats,
   navigate,
-  signOut,
-  demoSwitchUser,
   wallet,
   onOpenWithdraw,
 }: {
@@ -1922,8 +1844,6 @@ function ProfileView({
     requesterCompletedCount: number;
   };
   navigate: (target: PageId, orderId?: string) => void;
-  signOut: () => void;
-  demoSwitchUser: () => void;
   wallet: { grossEarned: number; withdrawn: number; available: number };
   onOpenWithdraw: () => void;
 }) {
@@ -1933,69 +1853,111 @@ function ProfileView({
   const activeOrders = myOrders.filter((order) => order.status !== "COMPLETED");
   const historyOrders = myOrders.filter((order) => order.status === "COMPLETED");
 
+  const getTier = (fulfillCount: number) => {
+    if (fulfillCount >= 15) return { name: "Gold Tier", color: "bg-yellow-100 text-yellow-800 border-yellow-200", icon: "🏆" };
+    if (fulfillCount >= 5) return { name: "Silver Tier", color: "bg-slate-100 text-slate-800 border-slate-200", icon: "🥈" };
+    return { name: "Bronze Tier", color: "bg-orange-100 text-orange-800 border-orange-200", icon: "🥉" };
+  };
+
+  const tier = getTier(stats.fulfillJobsCount);
+
   return (
-    <div className="space-y-6 pt-2">
-      <div className="space-y-6 lg:grid lg:grid-cols-3 lg:items-start lg:gap-6 lg:space-y-0">
-        <div className="space-y-5">
-          <div className="card p-5">
-            <div className="mb-4 flex items-start justify-between">
-              <div>
-                <p className="text-base font-bold text-gray-900">{user.name}</p>
-                <p className="text-xs text-gray-400">{user.sbuEmail}</p>
-                <p className="text-xs text-gray-400">{user.year}</p>
+    <div className="space-y-6 pt-2 pb-10">
+      <div className="space-y-6 lg:grid lg:grid-cols-3 lg:items-start lg:gap-8 lg:space-y-0">
+        <div className="space-y-6">
+          {/* Identity Card */}
+          <div className="card overflow-hidden">
+            <div className="relative bg-gradient-to-br from-sbu to-sbu-dark p-6 text-white">
+              <div
+                className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10"
+                aria-hidden
+              />
+              <div className="relative flex items-center justify-between">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/20 text-2xl font-bold shadow-sm backdrop-blur-sm">
+                  {user.name.charAt(0)}
+                </div>
+                <div className="text-right">
+                  <div className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2.5 py-1 text-xs font-semibold shadow-sm backdrop-blur-sm">
+                    <span className="text-yellow-300">★</span> 5.0 <span className="opacity-80">({stats.fulfillJobsCount + stats.requesterCompletedCount})</span>
+                  </div>
+                </div>
               </div>
-              <span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs font-bold text-gray-600">
-                Student
-              </span>
+              <h2 className="relative mt-4 font-display text-2xl font-bold">{user.name}</h2>
+              <p className="relative text-sm opacity-90">{user.sbuEmail}</p>
+              <div className="relative mt-4 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide">
+                <span className="rounded bg-black/20 px-2 py-1">{user.year}</span>
+                <span className={`rounded border px-2 py-1 ${tier.color.replace('bg-', 'bg-white/90 text-').split(' ')[1]} border-white/20 bg-white/90 shadow-sm`}>
+                  {tier.icon} {tier.name}
+                </span>
+              </div>
             </div>
-            <div className="mb-4 rounded-xl bg-stone-50 px-3 py-2.5">
-              <span className="text-xs text-gray-400">Wallet (available)</span>
-              <p className="text-lg font-bold text-gray-900">${wallet.available.toFixed(2)}</p>
-              <p className="mt-1 text-[11px] text-gray-500">
-                Gross from fulfillments ${wallet.grossEarned.toFixed(2)} · Sent to bank (demo) $
-                {wallet.withdrawn.toFixed(2)}
-              </p>
-              <button
-                type="button"
-                className="btn-secondary mt-3 w-full border-sbu/30 text-sm font-semibold text-sbu-dark"
-                onClick={onOpenWithdraw}
-              >
-                Withdraw to bank
-              </button>
+            
+            <div className="p-5 space-y-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">Trust & Safety</p>
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center gap-2 text-sm text-gray-700">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-green-100 text-green-600">✓</span>
+                    SBU Email Verified
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-gray-700">
+                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-green-100 text-green-600">✓</span>
+                    Venmo Linked <span className="font-medium text-gray-900">({user.venmoHandle || "—"})</span>
+                  </div>
+                </div>
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={demoSwitchUser}
-              className="btn-secondary border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100"
-            >
-              Demo: Switch Account
-            </button>
-            <button
-              type="button"
-              onClick={signOut}
-              className="btn-secondary mt-2 border border-stone-200 text-gray-600 hover:bg-red-50 hover:text-red-800"
-            >
-              Sign out
-            </button>
-            <p className="mt-2 text-center text-xs text-gray-400">
-              Demo switch jumps between two test accounts. Sign out to use any SBU email.
-            </p>
           </div>
 
+          {/* Wallet Card */}
+          <div className="card overflow-hidden">
+            <div className="border-b border-stone-100 bg-stone-50/50 p-5">
+              <div className="flex items-end justify-between mb-1">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">Available Balance</p>
+                  <p className="font-display text-4xl font-bold text-gray-900">${wallet.available.toFixed(2)}</p>
+                </div>
+                <div className="text-right pb-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Total Earned</p>
+                  <p className="text-sm font-bold text-green-600">${wallet.grossEarned.toFixed(2)}</p>
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-gray-500">
+                Withdrawn to bank (demo): ${wallet.withdrawn.toFixed(2)}
+              </p>
+            </div>
+            <div className="p-5">
+              <button
+                type="button"
+                className="btn-primary w-full"
+                onClick={onOpenWithdraw}
+              >
+                Withdraw to Bank
+              </button>
+            </div>
+          </div>
+
+          {/* Stats Grid */}
           <div className="grid grid-cols-2 gap-3">
-            <StatCard value={`$${stats.totalEarned.toFixed(2)}`} label="Gross earned" accent />
-            <StatCard value={`$${wallet.withdrawn.toFixed(2)}`} label="Withdrawn (demo)" />
             <StatCard value={`$${stats.totalSaved.toFixed(2)}`} label="Saved (post)" />
             <StatCard value={`${stats.fulfillJobsCount}`} label="Fulfill jobs" />
             <StatCard value={`${stats.requesterCompletedCount}`} label="Posts completed" />
+            <div className="card p-4 flex flex-col justify-center items-center text-center bg-stone-50 border-dashed">
+              <p className="text-xs font-medium text-gray-500">More stats coming soon</p>
+            </div>
           </div>
         </div>
 
-        <div className="space-y-5 lg:col-span-2">
+        <div className="space-y-6 lg:col-span-2">
           {activeOrders.length > 0 && (
             <div>
-              <p className="mb-2 text-sm font-semibold text-gray-600">In progress</p>
-              <div className="space-y-2">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="font-display text-xl font-bold text-gray-900">In Progress</h3>
+                <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-bold text-amber-800">
+                  {activeOrders.length} Active
+                </span>
+              </div>
+              <div className="space-y-3">
                 {activeOrders.map((order) => (
                   <OrderRow
                     key={order.id}
@@ -2008,10 +1970,10 @@ function ProfileView({
             </div>
           )}
 
-          {historyOrders.length > 0 && (
+          {historyOrders.length > 0 ? (
             <div>
-              <p className="mb-2 text-sm font-semibold text-gray-600">History</p>
-              <div className="space-y-2">
+              <h3 className="mb-3 font-display text-xl font-bold text-gray-900">Recent History</h3>
+              <div className="space-y-3">
                 {historyOrders.map((order) => (
                   <OrderRow
                     key={order.id}
@@ -2021,6 +1983,16 @@ function ProfileView({
                   />
                 ))}
               </div>
+            </div>
+          ) : (
+            <div className="card flex flex-col items-center justify-center p-10 text-center">
+              <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-stone-100">
+                <span className="text-2xl opacity-50">🧾</span>
+              </div>
+              <h3 className="font-display text-lg font-bold text-gray-900">No history yet</h3>
+              <p className="mt-1 max-w-sm text-sm text-gray-500">
+                When you complete requests or fulfill orders for others, they&apos;ll show up here.
+              </p>
             </div>
           )}
         </div>

@@ -13,6 +13,9 @@ export type UserDoc = {
   sbuEmail: string;
   roles: UserRole[];
   venmoHandle: string;
+  /** Set by seed / admin; never returned to browsers from login. */
+  passwordHash?: string;
+  year?: string;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
