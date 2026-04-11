@@ -23,6 +23,34 @@
   }
 }
 
+/* Login backdrop — photo tiles (no per-cell motion; whole strip pans) */
+.login-photo-cell {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  filter: saturate(1.06) contrast(1.03);
+}
+
+/* Seamless infinite scroll: two identical panels; -50% = one viewport width */
+@keyframes login-marquee-scroll {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.login-marquee-track {
+  display: flex;
+  flex-flow: row nowrap;
+  height: 100%;
+  min-height: 100dvh;
+  width: max-content;
+  will-change: transform;
+  animation: login-marquee-scroll 100s linear infinite;
+}
+
 :root {
   --background: #f7f6f3;
   --foreground: #111827;

@@ -1,6 +1,8 @@
 "use client";
 
+import { UtensilsCrossed } from "lucide-react";
 import { Dispatch, FormEvent, SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
+import { LoginSceneBackdrop } from "./components/LoginSceneBackdrop";
 
 const USER_STORAGE_KEY = "hackathon-user-v2";
 const WITHDRAWN_STORAGE_KEY = "hackathon-wallet-withdrawn-v1";
@@ -657,22 +659,33 @@ export default function Home() {
 
   if (!user) {
     return (
-      <main className="mx-auto max-w-xl px-4 py-10">
-        <div className="card space-y-4 p-6">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-sbu">
-              The Campus Food Exchange
-            </p>
-            <h1 className="font-display text-4xl font-bold text-gray-900">Connect your account</h1>
-            <p className="mt-2 text-sm text-gray-600">
-              <strong>Turn Dining Dollars into cash, or eat for half price.</strong>
-            </p>
-            <p className="mt-1 text-sm text-gray-500">
-              One account can post requests and claim others&apos; orders. Use Demo Switch Account or sign out
-              to try a second student in the same browser.
-            </p>
-          </div>
-          <form onSubmit={handleLogin} className="space-y-3">
+      <div className="relative min-h-dvh overflow-hidden">
+        <LoginSceneBackdrop />
+        {/* Mockup: red square cutlery mark — screen top-left */}
+        <div
+          className="pointer-events-none fixed left-5 top-5 z-20 flex h-11 w-11 items-center justify-center rounded-lg bg-sbu shadow-sm md:left-7 md:top-7"
+          aria-hidden
+        >
+          <UtensilsCrossed className="h-6 w-6 text-white" strokeWidth={2.5} />
+        </div>
+        <main className="relative z-10 flex min-h-dvh items-center justify-center px-4 py-10">
+          <div
+            className="card relative mx-auto w-full max-w-xl space-y-4 p-6 shadow-[0_4px_24px_-4px_rgba(0,0,0,0.15),0_28px_56px_-20px_rgba(0,0,0,0.25)]"
+          >
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-sbu">
+                The Campus Food Exchange
+              </p>
+              <h1 className="font-display text-4xl font-bold text-gray-900">Connect your account</h1>
+              <p className="mt-2 text-sm text-gray-600">
+                <strong>Turn Dining Dollars into cash, or eat for half price.</strong>
+              </p>
+              <p className="mt-1 text-sm text-gray-500">
+                One account can post requests and claim others&apos; orders. Use Demo Switch Account or sign out
+                to try a second student in the same browser.
+              </p>
+            </div>
+            <form onSubmit={handleLogin} className="space-y-3">
             <input
               className="input-field"
               placeholder="Full name"
@@ -691,7 +704,11 @@ export default function Home() {
               }
             />
             <input
-              className="input-field"
+              className={`input-field ${
+                error
+                  ? "border-2 border-sbu ring-2 ring-sbu ring-offset-2 ring-offset-white"
+                  : ""
+              }`}
               placeholder="Venmo handle"
               value={loginForm.venmoHandle}
               onChange={(event) =>
@@ -711,8 +728,9 @@ export default function Home() {
             </button>
             {error ? <p className="text-sm text-red-600">{error}</p> : null}
           </form>
-        </div>
-      </main>
+          </div>
+        </main>
+      </div>
     );
   }
 
@@ -850,7 +868,7 @@ function WithdrawToBankModal({
               Withdraw to bank
             </h2>
             <p className="text-sm text-gray-500">
-              Demo only—no real money moves. Simulates sending your TradeEats balance to a linked account.
+              Demo only—no real money moves. Simulates sending your SeawolfEats balance to a linked account.
             </p>
             <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Linked account</p>
@@ -965,7 +983,7 @@ function Navbar({
               className="shrink-0 rounded focus-visible:ring-2 focus-visible:ring-sbu/30"
             >
               <span className="font-display text-xl font-bold tracking-tight text-gray-900">
-                Trade<span className="text-sbu">Eats</span>
+                Seawolf<span className="text-sbu">Eats</span>
               </span>
             </button>
             <nav className="hidden min-w-0 flex-1 items-center gap-0.5 overflow-x-auto md:flex lg:gap-1">

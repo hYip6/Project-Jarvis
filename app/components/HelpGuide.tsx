@@ -32,31 +32,40 @@ export function HelpGuide() {
 
   return (
     <>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls="help-guide-panel"
-        aria-label={open ? "Close help guide" : "Open how Seawolf Eats works"}
-        onClick={() => setOpen((v) => !v)}
-        className={`fixed bottom-5 right-5 z-[60] flex h-14 w-14 items-center justify-center rounded-full border-2 bg-white transition-transform duration-200 hover:animate-none md:bottom-8 md:right-8 md:h-16 md:w-16 motion-reduce:animate-none ${
-          open
-            ? ""
-            : "animate-help-fab hover:scale-105 active:scale-95 motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
-        }`}
-        style={{
-          borderColor: SEAWOLF_RED,
-          color: SEAWOLF_RED,
-        }}
-      >
-        <span
-          className={`inline-flex origin-center will-change-transform ${
-            open ? "" : "animate-help-icon motion-reduce:animate-none"
+      <div className="fixed bottom-5 right-5 z-[60] flex flex-col items-center drop-shadow-[0_4px_14px_rgba(0,0,0,0.2)] md:bottom-8 md:right-8">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls="help-guide-panel"
+          aria-label={open ? "Close help guide" : "Open how Seawolf Eats works"}
+          onClick={() => setOpen((v) => !v)}
+          className={`relative z-[1] flex h-14 w-14 items-center justify-center rounded-full border-2 bg-white transition-transform duration-200 hover:animate-none md:h-16 md:w-16 motion-reduce:animate-none ${
+            open
+              ? ""
+              : "animate-help-fab hover:scale-105 active:scale-95 motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
           }`}
-          aria-hidden
+          style={{
+            borderColor: SEAWOLF_RED,
+            color: SEAWOLF_RED,
+          }}
         >
-          <HelpCircle className="h-7 w-7 stroke-[2.5] md:h-8 md:w-8" />
-        </span>
-      </button>
+          <span
+            className={`inline-flex origin-center will-change-transform ${
+              open ? "" : "animate-help-icon motion-reduce:animate-none"
+            }`}
+            aria-hidden
+          >
+            <HelpCircle className="h-7 w-7 stroke-[2.5] md:h-8 md:w-8" />
+          </span>
+        </button>
+        {/* Speech-bubble tail (mockup) — hidden while drawer open */}
+        {!open ? (
+          <div
+            className="pointer-events-none relative z-0 -mt-2 h-0 w-0 border-l-[9px] border-r-[9px] border-t-[11px] border-l-transparent border-r-transparent border-t-white"
+            aria-hidden
+          />
+        ) : null}
+      </div>
 
       <div
         className={`fixed inset-0 z-50 bg-black/45 transition-opacity duration-300 md:bg-black/40 ${
